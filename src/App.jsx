@@ -1,747 +1,1434 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  CheckCircle, AlertCircle, Users, Settings, Lock, Key, 
-  CalendarClock, Unlock, ChevronRight, X, LayoutDashboard, Vote, ShieldAlert
-} from "lucide-react";
+  Users, Vote, LayoutDashboard, ShieldAlert, CheckCircle2, 
+  Clock, AlertCircle, Plus, Trash2, Settings, UserCheck, 
+  TrendingUp, BarChart3, ChevronRight, X, Lock, Key, CalendarClock, Unlock
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, doc, setDoc, getDoc, collection, onSnapshot, 
+  deleteDoc, updateDoc, increment 
+} from 'firebase/firestore';
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'student-council-v1';
+
+// Strict Path Helpers (Rule 1)
+const getPublicCollection = (collectionName) => collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+const getPublicDoc = (collectionName, docId) => doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
+
+const POSITIONS = [
+  'President', 
+  'Vice President', 
+  'Secretary', 
+  'Auditor', 
+  'Treasurer', 
+  'Project Manager', 
+  'Grade Representative'
+];
+
+const GRADES = ['7', '8', '9', '10'];
 
 export default function App() {
-  // --- SYSTEM STATES ---
-  const [electionActive, setElectionActive] = useState(() => {
-    return localStorage.getItem("electionActive") === "true";
+  const [user, setUser] = useState(null);
+  const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard', 'vote', 'admin'
+  const [candidates, setCandidates] = useState([]);
+  const [voters, setVoters] = useState([]);
+  const [settings, setSettings] = useState({ 
+    totalRegisteredVoters: 500, 
+    electionActive: false, 
+    adminPin: 'ADMIN2026',
+    voterUnlockPin: 'VOTE2026',
+    startTime: '08:00',
+    endTime: '16:00'
   });
-  const [isTerminalUnlocked, setIsTerminalUnlocked] = useState(() => {
-    return localStorage.getItem("isTerminalUnlocked") === "true";
-  });
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
   
-  // Credentials
-  const [adminPin, setAdminPin] = useState(() => localStorage.getItem("adminPin") || "1234");
-  const [voterUnlockPin, setVoterUnlockPin] = useState(() => localStorage.getItem("voterUnlockPin") || "5678");
-  
-  // Time-Lock Configurations (Default: 8:00 AM to 4:00 PM)
-  const [startTime, setStartTime] = useState(() => localStorage.getItem("startTime") || "08:00");
-  const [endTime, setEndTime] = useState(() => localStorage.getItem("endTime") || "16:00");
+  const [secretClicks, setSecretClicks] = useState(0);
+  const [showHiddenNav, setShowHiddenNav] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  // Voting Session States
-  const [step, setStep] = useState(1); // 1: Login, 2: Ballot, 3: Success
-  const [studentId, setStudentId] = useState("");
-  const [studentGrade, setStudentGrade] = useState("7");
-  const [selectedCandidates, setSelectedCandidates] = useState({}); // { Position: CandidateId or [IDs] }
-  
-  // Input tracking for entry screens
-  const [elecomInput, setElecomInput] = useState("");
-  const [adminPinInput, setAdminPinInput] = useState("");
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
-  const [view, setView] = useState("dashboard"); // "dashboard", "voter", "admin"
-  
-  // Hidden Controls Easter Egg
-  const [logoClicks, setLogoClicks] = useState(0);
-  const [showSecretMenu, setShowSecretMenu] = useState(false);
-
-  // Setup Modal States (When opening the election)
-  const [showSetupModal, setShowSetupModal] = useState(false);
-  const [newAdminPin, setNewAdminPin] = useState("");
-  const [newElecomPin, setNewElecomPin] = useState("");
-
-  // In-Memory & LocalStorage Database of Casted Votes
-  const [votedStudentIds, setVotedStudentIds] = useState(() => {
-    const saved = localStorage.getItem("votedStudentIds");
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [voteDatabase, setVoteDatabase] = useState(() => {
-    const saved = localStorage.getItem("voteDatabase");
-    return saved ? JSON.parse(saved) : {
-      1: 42, 2: 38, // President
-      3: 50, 4: 30, // VP
-      5: 25, 6: 45, // Secretary
-      7: 15, 8: 20, 9: 10, // Project Managers
-      10: 12, 11: 8,  // Grade 7 Reps
-      12: 15, 13: 11, // Grade 8 Reps
-      14: 9, 15: 14,  // Grade 9 Reps
-      16: 18, 17: 12  // Grade 10 Reps
-    };
-  });
-
-  // Candidate Directory
-  const candidatesList = [
-    // Presidents
-    { id: 1, name: "Maria Clara", position: "President", party: "Alab Party", grade: null },
-    { id: 2, name: "Juan Dela Cruz", position: "President", party: "Siklab Party", grade: null },
-    // Vice Presidents
-    { id: 3, name: "Jose Rizal", position: "Vice President", party: "Alab Party", grade: null },
-    { id: 4, name: "Andres Bonifacio", position: "Vice President", party: "Siklab Party", grade: null },
-    // Secretaries
-    { id: 5, name: "Apollinario Mabini", position: "Secretary", party: "Alab Party", grade: null },
-    { id: 6, name: "Emilio Jacinto", position: "Secretary", party: "Siklab Party", grade: null },
-    // Project Managers (Can vote up to 2)
-    { id: 7, name: "Antonio Luna", position: "Project Manager", party: "Alab Party", grade: null },
-    { id: 8, name: "Melchora Aquino", position: "Project Manager", party: "Siklab Party", grade: null },
-    { id: 9, name: "Gabriela Silang", position: "Project Manager", party: "Independent", grade: null },
-    // Grade Representatives
-    { id: 10, name: "Sarah Geronimo", position: "Grade Rep", party: "Alab Party", grade: "7" },
-    { id: 11, name: "Christian Bautista", position: "Grade Rep", party: "Siklab Party", grade: "7" },
-    { id: 12, name: "Anne Curtis", position: "Grade Rep", party: "Alab Party", grade: "8" },
-    { id: 13, name: "Vice Ganda", position: "Grade Rep", party: "Siklab Party", grade: "8" },
-    { id: 14, name: "Kathryn Bernardo", position: "Grade Rep", party: "Alab Party", grade: "9" },
-    { id: 15, name: "Daniel Padilla", position: "Grade Rep", party: "Siklab Party", grade: "9" },
-    { id: 16, name: "Donny Pangilinan", position: "Grade Rep", party: "Alab Party", grade: "10" },
-    { id: 17, name: "Belle Mariano", position: "Grade Rep", party: "Siklab Party", grade: "10" }
-  ];
-
-  // Save changes to localStorage to persist through browser restarts
   useEffect(() => {
-    localStorage.setItem("electionActive", electionActive);
-    localStorage.setItem("isTerminalUnlocked", isTerminalUnlocked);
-    localStorage.setItem("adminPin", adminPin);
-    localStorage.setItem("voterUnlockPin", voterUnlockPin);
-    localStorage.setItem("startTime", startTime);
-    localStorage.setItem("endTime", endTime);
-    localStorage.setItem("votedStudentIds", JSON.stringify(votedStudentIds));
-    localStorage.setItem("voteDatabase", JSON.stringify(voteDatabase));
-  }, [electionActive, isTerminalUnlocked, adminPin, voterUnlockPin, startTime, endTime, votedStudentIds, voteDatabase]);
-
-  // Live Timer
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const currentTimeString = useMemo(() => {
-    return currentTime.toTimeString().split(' ')[0].substring(0, 5);
-  }, [currentTime]);
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
 
-  // Strict Time Lock Calculation
-  const isAdminLockedOut = useMemo(() => {
-    if (!electionActive) return false;
-    return currentTimeString >= startTime && currentTimeString <= endTime;
-  }, [electionActive, currentTimeString, startTime, endTime]);
+  useEffect(() => {
+    if (!user) return;
 
-  // Secret Easter Egg Handler
-  const handleLogoClick = () => {
-    const nextClicks = logoClicks + 1;
-    setLogoClicks(nextClicks);
-    if (nextClicks >= 5) {
-      setShowSecretMenu(true);
-      setLogoClicks(0);
-    }
+    // Listen to Candidates
+    const unsubCandidates = onSnapshot(
+      getPublicCollection('candidates'),
+      (snapshot) => {
+        const cands = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        setCandidates(cands);
+      },
+      (err) => console.error(err)
+    );
+
+    // Listen to Voters
+    const unsubVoters = onSnapshot(
+      getPublicCollection('voters'),
+      (snapshot) => {
+        const vts = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        setVoters(vts);
+      },
+      (err) => console.error(err)
+    );
+
+    // Listen to Settings
+    const unsubSettings = onSnapshot(
+      getPublicDoc('settings', 'config'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setSettings(docSnap.data());
+        } else {
+          // Initialize default settings with election closed by default
+          setDoc(getPublicDoc('settings', 'config'), { 
+            totalRegisteredVoters: 500, 
+            electionActive: false,
+            adminPin: 'ADMIN2026',
+            voterUnlockPin: 'VOTE2026',
+            startTime: '08:00',
+            endTime: '16:00'
+          });
+        }
+        setLoading(false);
+      },
+      (err) => console.error(err)
+    );
+
+    return () => {
+      unsubCandidates();
+      unsubVoters();
+      unsubSettings();
+    };
+  }, [user]);
+
+  const isAdminLockoutActive = useMemo(() => {
+    if (!settings.electionActive) return false;
+    if (!settings.startTime || !settings.endTime) return false;
+
+    // Convert current local time to total minutes past midnight
+    const currentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+    
+    // Parse scheduled start/end times safely
+    const [sH, sM] = settings.startTime.split(':').map(Number);
+    const [eH, eM] = settings.endTime.split(':').map(Number);
+    
+    const startMinutes = sH * 60 + (sM || 0);
+    const endMinutes = eH * 60 + (eM || 0);
+
+    // Active lockout occurs only if the current time falls inside the scheduled window
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  }, [settings.electionActive, settings.startTime, settings.endTime, currentTime]);
+
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
   };
 
-  // --- CONTROLLER HANDLERS ---
-  const handleOpenSetupModal = () => {
-    setNewAdminPin("");
-    setNewElecomPin("");
-    setShowSetupModal(true);
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-emerald-400">
+        <div className="animate-spin mr-3"><CheckCircle2 size={32} /></div>
+        <span className="text-xl font-semibold tracking-wider">INITIALIZING SYSTEM...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-emerald-500/30">
+      
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-xl backdrop-blur-md border animate-in fade-in slide-in-from-top-5 ${
+          toast.type === 'error' ? 'bg-red-500/20 border-red-500/50 text-red-200' : 
+          toast.type === 'success' ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200' : 
+          'bg-indigo-500/20 border-indigo-500/50 text-indigo-200'
+        }`}>
+          {toast.message}
+        </div>
+      )}
+
+      {/* Top Navigation */}
+      {currentView !== 'vote' && (
+      <nav className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            
+            <div 
+              className="flex items-center gap-3 cursor-pointer select-none"
+              onClick={() => {
+                const newCount = secretClicks + 1;
+                setSecretClicks(newCount);
+                if (newCount >= 5) {
+                  setShowHiddenNav(!showHiddenNav);
+                  setSecretClicks(0);
+                  showToast("Secret menu toggled. Supervised navigation unlocked.", "success");
+                }
+              }}
+            >
+              <div className="bg-indigo-500 p-2 rounded-lg shadow-lg shadow-indigo-500/20">
+                <Vote className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-white tracking-tight leading-tight flex items-center gap-1.5">
+                  Student Council
+                  {!showHiddenNav && <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 uppercase tracking-widest">Public</span>}
+                </h1>
+                <p className="text-xs text-indigo-400 font-medium uppercase tracking-wider">Election System 2026</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <NavBtn active={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} icon={<LayoutDashboard size={18}/>} label="Live Board" />
+              {showHiddenNav && (
+                <>
+                  <NavBtn active={currentView === 'vote'} onClick={() => {setCurrentView('vote'); setShowHiddenNav(false);}} icon={<UserCheck size={18}/>} label="Vote Now" highlight />
+                  <NavBtn active={currentView === 'admin'} onClick={() => setCurrentView('admin')} icon={<ShieldAlert size={18}/>} label="Admin Console" />
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </nav>
+      )}
+
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {currentView === 'dashboard' && <LiveDashboard candidates={candidates} voters={voters} settings={settings} />}
+        {currentView === 'vote' && <VotingInterface candidates={candidates} settings={settings} showToast={showToast} returnToDashboard={() => setCurrentView('dashboard')} />}
+        {currentView === 'admin' && (
+          <AdminDashboard 
+            candidates={candidates} 
+            settings={settings} 
+            showToast={showToast} 
+            isLockoutActive={isAdminLockoutActive}
+            currentTime={currentTime}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function NavBtn({ active, onClick, icon, label, highlight }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+        active 
+          ? highlight ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/25' : 'bg-slate-800 text-white' 
+          : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+      } ${highlight && !active ? 'border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10' : ''}`}
+    >
+      {icon}
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
+}
+
+function LiveDashboard({ candidates, voters, settings }) {
+  const [time, setTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const totalVotes = voters.length;
+  const turnoutPercent = settings.totalRegisteredVoters > 0 
+    ? Math.min(100, Math.round((totalVotes / settings.totalRegisteredVoters) * 100)) 
+    : 0;
+
+  // Group and sort candidates
+  const groupedCandidates = useMemo(() => {
+    const groups = {};
+    POSITIONS.forEach(pos => groups[pos] = []);
+    candidates.forEach(c => {
+      if (groups[c.position]) {
+        groups[c.position].push(c);
+      }
+    });
+    
+    // Sort by votes
+    Object.keys(groups).forEach(pos => {
+      groups[pos].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+    });
+    return groups;
+  }, [candidates]);
+
+  // Helper format time format
+  const formatTimeTwelve = (timeString) => {
+    if (!timeString) return '';
+    const [hours, minutes] = timeString.split(':');
+    const h = parseInt(hours, 10);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h % 12 || 12;
+    return `${hour12}:${minutes} ${ampm}`;
   };
 
-  const handleConfirmStartElection = (e) => {
-    e.preventDefault();
-    if (newAdminPin.trim().length < 4 || newElecomPin.trim().length < 4) {
-      alert("Both pins must be at least 4 digits.");
-      return;
-    }
-    setAdminPin(newAdminPin);
-    setVoterUnlockPin(newElecomPin);
-    setElectionActive(true);
-    setIsTerminalUnlocked(false);
-    setShowSetupModal(false);
-  };
+  return (
+    <div className="space-y-8 animate-in fade-in duration-500">
+      
+      {/* Media Board Header */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-950 border border-slate-800 shadow-2xl p-6 sm:p-10">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-emerald-500 to-indigo-500"></div>
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
+          
+          <div>
+            <div className="flex flex-wrap items-center gap-3 mb-2">
+              <span className="flex h-3 w-3 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+              </span>
+              <span className="text-red-400 font-bold uppercase tracking-widest text-sm">Live Coverage</span>
+              <span className="px-3 py-1 bg-indigo-500/20 text-indigo-300 text-xs font-semibold rounded-full border border-indigo-500/30 flex items-center gap-1">
+                <Clock size={12} /> Scheduled Polling: {formatTimeTwelve(settings.startTime)} - {formatTimeTwelve(settings.endTime)}
+              </span>
+            </div>
+            <h2 className="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">Official Tally Board</h2>
+            <p className="text-slate-400 mt-2 text-lg">Real-time election results synchronization</p>
+          </div>
 
-  const handleResetElection = () => {
-    if (window.confirm("WARNING: This will completely delete all votes and clear the registered voter records. Are you sure?")) {
-      setVotedStudentIds([]);
-      setVoteDatabase({
-        1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0
-      });
-      setElectionActive(false);
-      setIsTerminalUnlocked(false);
-      setStep(1);
-      setView("dashboard");
-      setShowSecretMenu(false);
-    }
-  };
+          <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800 min-w-[200px] text-center backdrop-blur-sm">
+            <Clock className="w-5 h-5 text-indigo-400 mx-auto mb-2" />
+            <div className="text-2xl font-mono font-bold text-white tracking-wider">
+              {time.toLocaleTimeString('en-US', { hour12: false })}
+            </div>
+            <div className="text-xs text-slate-500 mt-1 uppercase">PST Standard Time</div>
+          </div>
+        </div>
+      </div>
 
-  const handleAdminLogin = (e) => {
-    e.preventDefault();
-    if (adminPinInput === adminPin) {
-      setIsAdminAuthenticated(true);
-      setAdminPinInput("");
+      {/* Metrics Row */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <MetricCard icon={<Users />} label="Registered Voters" value={settings.totalRegisteredVoters} color="indigo" />
+        <MetricCard icon={<CheckCircle2 />} label="Transmitted Ballots" value={totalVotes} color="emerald" />
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col justify-center">
+          <div className="flex justify-between items-end mb-2">
+            <span className="text-sm font-medium text-slate-400 uppercase tracking-wider">Voter Turnout</span>
+            <span className="text-2xl font-bold text-white">{turnoutPercent}%</span>
+          </div>
+          <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
+            <div 
+              className="bg-gradient-to-r from-emerald-500 to-indigo-500 h-3 rounded-full transition-all duration-1000 ease-out"
+              style={{ width: `${turnoutPercent}%` }}
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Results Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {POSITIONS.map(position => {
+          if (position === 'Grade Representative') return null; // Handled separately
+          
+          const positionCandidates = groupedCandidates[position] || [];
+          const totalPosVotes = positionCandidates.reduce((sum, c) => sum + (c.votes || 0), 0);
+          const isProjectManager = position === 'Project Manager';
+
+          return (
+            <div key={position} className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
+              <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700/50 flex justify-between items-center">
+                <h3 className="text-xl font-bold text-white">{position}</h3>
+                <span className="text-xs font-semibold px-3 py-1 bg-slate-950 rounded-full text-slate-300">
+                  {totalPosVotes} votes cast
+                </span>
+              </div>
+              <div className="p-6 space-y-4">
+                {positionCandidates.length === 0 ? (
+                  <p className="text-slate-500 text-center py-4">No candidates registered.</p>
+                ) : (
+                  positionCandidates.map((candidate, idx) => {
+                    const isWinning = isProjectManager ? idx < 2 && candidate.votes > 0 : idx === 0 && candidate.votes > 0;
+                    const percent = totalPosVotes > 0 ? ((candidate.votes || 0) / totalPosVotes) * 100 : 0;
+                    
+                    return (
+                      <div key={candidate.id} className={`relative rounded-xl p-4 transition-all ${isWinning ? 'bg-emerald-500/10 border border-emerald-500/30' : 'bg-slate-950/50 border border-slate-800'}`}>
+                        {isWinning && (
+                          <div className="absolute top-4 right-4 flex items-center gap-1 text-emerald-400 text-xs font-bold uppercase tracking-wider animate-pulse">
+                            <TrendingUp size={14} /> Leading
+                          </div>
+                        )}
+                        <div className="flex justify-between items-end mb-3">
+                          <div>
+                            <h4 className={`font-bold text-lg ${isWinning ? 'text-emerald-300' : 'text-slate-200'}`}>
+                              {candidate.name}
+                            </h4>
+                            <p className="text-sm text-slate-400">{candidate.party}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-2xl font-bold text-white">{candidate.votes || 0}</div>
+                          </div>
+                        </div>
+                        <div className="w-full bg-slate-900 rounded-full h-1.5 mb-1 overflow-hidden">
+                          <div 
+                            className={`h-1.5 rounded-full transition-all duration-1000 ${isWinning ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+                            style={{ width: `${percent}%` }}
+                          ></div>
+                        </div>
+                        <div className="text-right text-xs text-slate-500">{percent.toFixed(1)}%</div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Grade Representatives Section */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg mt-8">
+        <div className="bg-slate-800/80 px-6 py-5 border-b border-slate-700">
+          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+            <Users className="text-indigo-400" /> Grade Representatives
+          </h3>
+        </div>
+        <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {GRADES.map(grade => {
+            const reps = (groupedCandidates['Grade Representative'] || []).filter(c => c.gradeLevel === grade);
+            const totalRepVotes = reps.reduce((sum, c) => sum + (c.votes || 0), 0);
+            return (
+              <div key={grade} className="bg-slate-950 rounded-xl p-4 border border-slate-800">
+                <h4 className="text-center font-bold text-indigo-300 mb-4 pb-2 border-b border-slate-800">Grade {grade}</h4>
+                {reps.length === 0 ? (
+                  <p className="text-slate-600 text-xs text-center">No candidates</p>
+                ) : (
+                  <div className="space-y-3">
+                    {reps.map((c, idx) => (
+                      <div key={c.id} className={`p-3 rounded-lg border ${idx === 0 && c.votes > 0 ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-slate-900 border-slate-800'}`}>
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="text-sm font-medium text-slate-200 leading-tight">{c.name}</div>
+                          <div className="text-sm font-bold text-white bg-slate-800 px-2 rounded">{c.votes || 0}</div>
+                        </div>
+                        <div className="w-full bg-slate-950 rounded-full h-1 overflow-hidden">
+                          <div className={`h-1 rounded-full ${idx === 0 && c.votes > 0 ? 'bg-emerald-400' : 'bg-slate-600'}`} style={{ width: `${totalRepVotes > 0 ? ((c.votes || 0) / totalRepVotes) * 100 : 0}%` }}></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ icon, label, value, color }) {
+  const colorMap = {
+    indigo: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
+    emerald: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+  };
+  
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 flex items-center gap-5 shadow-sm">
+      <div className={`p-4 rounded-xl ${colorMap[color]}`}>
+        {icon}
+      </div>
+      <div>
+        <div className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-1">{label}</div>
+        <div className="text-3xl font-extrabold text-white">{value.toLocaleString()}</div>
+      </div>
+    </div>
+  );
+}
+
+function VotingInterface({ candidates, settings, showToast, returnToDashboard }) {
+  const [step, setStep] = useState(0); // 0: ELECOM Unlock, 1: Voter Auth, 2: Ballot, 3: Review, 4: Success
+  const [isTerminalUnlocked, setIsTerminalUnlocked] = useState(false);
+  const [elecomUnlockPin, setElecomUnlockPin] = useState('');
+  const [studentInfo, setStudentInfo] = useState({ id: '', grade: '7' });
+  const [selections, setSelections] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Check if terminal is already unlocked in this memory state
+  useEffect(() => {
+    if (isTerminalUnlocked) {
+      setStep(1); // Proceed directly to voter login
     } else {
-      alert("Incorrect Admin Access PIN!");
+      setStep(0); // Require initial ELECOM unlocking passkey
     }
+  }, [isTerminalUnlocked]);
+
+  // Handle transition to next voter
+  const handleNextVoter = () => {
+    setStudentInfo({ id: '', grade: '7' });
+    setSelections({});
+    
+    // Instead of going to step 0 and asking ELECOM to type the password again,
+    // we go straight to Step 1 (Voter Identification login screen).
+    setStep(1); 
+    showToast("Terminal ready for next student.", "info");
   };
 
   const handleElecomUnlock = (e) => {
     e.preventDefault();
-    if (elecomInput === voterUnlockPin) {
+    const correctPin = settings?.voterUnlockPin || 'VOTE2026';
+    if (elecomUnlockPin === correctPin) {
       setIsTerminalUnlocked(true);
       setStep(1);
-      setElecomInput("");
+      showToast("Voting terminal unlocked for continuous student sessions.", "success");
     } else {
-      alert("Invalid ELECOM Kiosk Passkey!");
+      showToast("Invalid ELECOM Passkey.", "error");
     }
   };
 
-  const handleStudentLogin = (e) => {
+  const handleLockTerminal = () => {
+    setIsTerminalUnlocked(false);
+    setElecomUnlockPin('');
+    setStep(0);
+    showToast("Terminal locked manually.", "info");
+  };
+
+  // Group candidates for the ballot
+  const groupedCandidates = useMemo(() => {
+    const groups = {};
+    POSITIONS.forEach(pos => groups[pos] = []);
+    candidates.forEach(c => {
+      if (groups[c.position]) groups[c.position].push(c);
+    });
+    return groups;
+  }, [candidates]);
+
+  const handleLogin = async (e) => {
     e.preventDefault();
-    const cleanId = studentId.trim().toUpperCase();
-    if (!cleanId) {
-      alert("Please enter your Student ID.");
+    if (!settings.electionActive) {
+      showToast("The election is currently closed.", "error");
       return;
     }
     
-    // Check if student has already voted (Double-Voting Protection)
-    if (votedStudentIds.includes(cleanId)) {
-      alert("ACCESS DENIED: A ballot has already been submitted under this Student ID.");
-      setStudentId("");
+    // Validate Student ID structure
+    const cleanedId = studentInfo.id.trim().toUpperCase();
+    if (cleanedId.length < 4) {
+      showToast("Please enter a valid Student ID.", "error");
       return;
     }
 
-    setStudentId(cleanId);
-    setSelectedCandidates({});
-    setStep(2); // Proceed to digital ballot
+    try {
+      const docRef = getPublicDoc('voters', cleanedId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        showToast("Error: This Student ID has already cast a ballot.", "error");
+        return;
+      }
+      setStep(2);
+      showToast("Identity verified. Proceeding to ballot.", "success");
+    } catch (error) {
+      console.error(error);
+      showToast("System error verifying ID.", "error");
+    }
   };
 
-  const handleSelectCandidate = (position, candidateId, maxAllowed = 1) => {
-    if (maxAllowed === 1) {
-      setSelectedCandidates(prev => ({ ...prev, [position]: candidateId }));
-    } else {
-      const currentSelected = selectedCandidates[position] || [];
-      if (currentSelected.includes(candidateId)) {
-        setSelectedCandidates(prev => ({
-          ...prev,
-          [position]: currentSelected.filter(id => id !== candidateId)
-        }));
+  const handleSelection = (position, candidateId) => {
+    if (position === 'Project Manager') {
+      const current = selections[position] || [];
+      if (current.includes(candidateId)) {
+        setSelections({ ...selections, [position]: current.filter(id => id !== candidateId) });
       } else {
-        if (currentSelected.length >= maxAllowed) {
-          alert(`You can only choose a maximum of ${maxAllowed} candidates for this position.`);
+        if (current.length >= 2) {
+          showToast("You can only select up to 2 Project Managers.", "error");
           return;
         }
-        setSelectedCandidates(prev => ({
-          ...prev,
-          [position]: [...currentSelected, candidateId]
-        }));
+        setSelections({ ...selections, [position]: [...current, candidateId] });
       }
+    } else {
+      setSelections({ ...selections, [position]: candidateId });
     }
   };
 
-  const handleCastVotes = () => {
-    // Check if the student has selected at least one candidate
-    if (Object.keys(selectedCandidates).length === 0) {
-      alert("You must select at least one candidate before casting your ballot.");
-      return;
-    }
+  const submitBallot = async () => {
+    setIsSubmitting(true);
+    const cleanedId = studentInfo.id.trim().toUpperCase();
+    try {
+      const voterRef = getPublicDoc('voters', cleanedId);
+      const docSnap = await getDoc(voterRef);
+      if (docSnap.exists()) throw new Error("ALREADY_VOTED");
 
-    // Process vote increment inside local database state
-    const updatedDb = { ...voteDatabase };
-    Object.values(selectedCandidates).forEach(val => {
-      if (Array.isArray(val)) {
-        val.forEach(id => {
-          updatedDb[id] = (updatedDb[id] || 0) + 1;
-        });
+      // Save Student ID block in Firestore with server metadata
+      await setDoc(voterRef, {
+        grade: studentInfo.grade,
+        votedAt: new Date().toISOString()
+      });
+
+      const updates = [];
+      for (const [position, selection] of Object.entries(selections)) {
+        if (Array.isArray(selection)) {
+          selection.forEach(id => {
+            updates.push(updateDoc(getPublicDoc('candidates', id), { votes: increment(1) }));
+          });
+        } else if (selection) {
+          updates.push(updateDoc(getPublicDoc('candidates', selection), { votes: increment(1) }));
+        }
+      }
+      await Promise.all(updates);
+
+      setStep(4);
+      showToast("Ballot submitted successfully!", "success");
+    } catch (error) {
+      console.error(error);
+      if (error.message === "ALREADY_VOTED") {
+        showToast("Transaction Failed: Student has already voted.", "error");
       } else {
-        updatedDb[val] = (updatedDb[val] || 0) + 1;
+        showToast("Failed to submit ballot. Please try again.", "error");
       }
-    });
-
-    setVoteDatabase(updatedDb);
-    setVotedStudentIds(prev => [...prev, studentId]);
-    setStep(3); // Go to Success page
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleResetForNextVoter = () => {
-    setStudentId("");
-    setSelectedCandidates({});
-    setStep(1); // Return cleanly to student login
-  };
-
-  // Turnout Metrics
-  const totalRegisteredVoters = 300;
-  const transmittedVotesCount = votedStudentIds.length;
-  const turnoutPercentage = ((transmittedVotesCount / totalRegisteredVoters) * 100).toFixed(1);
+  if (!settings.electionActive && step !== 4) {
+    return (
+      <div className="max-w-xl mx-auto mt-20 bg-red-500/10 border border-red-500/30 rounded-2xl p-10 text-center animate-in fade-in">
+        <ShieldAlert className="w-16 h-16 text-red-400 mx-auto mb-4 animate-bounce" />
+        <h2 className="text-2xl font-bold text-white mb-2">Election Closed</h2>
+        <p className="text-slate-400 mb-6">The voting portal is currently closed or in pre-election state.</p>
+        <button 
+          onClick={returnToDashboard} 
+          className="px-4 py-2 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 font-medium"
+        >
+          Return to Dashboard
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans select-none">
+    <div className="max-w-4xl mx-auto animate-in slide-in-from-bottom-4 duration-500">
       
-      {/* HEADER BAR (Hidden in Vote Now to avoid student bypasses) */}
-      {view !== "voter" && (
-        <header className="bg-slate-800 border-b border-slate-700 px-6 py-4 flex flex-col md:flex-row gap-4 justify-between items-center shadow-md">
-          <div onClick={handleLogoClick} className="flex items-center space-x-3 cursor-pointer">
-            <div className={`h-3.5 w-3.5 rounded-full ${electionActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            <span className="text-lg font-extrabold tracking-wider bg-gradient-to-r from-indigo-400 to-emerald-400 bg-clip-text text-transparent">
-              CLARENDON COLLEGE ELECOM
-            </span>
+      {/* Kiosk Escape & Continuous Lock controls (Supervisor Only) */}
+      <div className="flex justify-between items-center mb-6 px-2 text-xs text-slate-500">
+        <span>COMLAB KIOSK ACTIVE</span>
+        {isTerminalUnlocked && (
+          <div className="flex gap-4">
+            <button 
+              onClick={handleLockTerminal}
+              className="text-amber-500/80 hover:text-amber-400 flex items-center gap-1 transition-colors"
+            >
+              <Lock size={12} /> Lock Booth
+            </button>
+            <button 
+              onClick={returnToDashboard}
+              className="text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
+            >
+              Exit to Board
+            </button>
           </div>
-          
-          <div className="flex items-center space-x-4">
-            <span className="text-xs font-mono bg-slate-950 px-3 py-1.5 rounded-md border border-slate-700 text-indigo-300">
-              🕒 {currentTime.toLocaleTimeString()}
-            </span>
+        )}
+      </div>
 
-            {/* Hidden Controls Container (Activated via Easter Egg) */}
-            {showSecretMenu ? (
-              <div className="flex gap-2 bg-slate-950/50 p-1 rounded-lg border border-indigo-500/30 animate-pulse">
-                <button 
-                  onClick={() => setView("dashboard")} 
-                  className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 ${view === "dashboard" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  <LayoutDashboard className="w-3.5 h-3.5" /> Live Board
-                </button>
-                <button 
-                  onClick={() => setView("voter")} 
-                  className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 ${view === "voter" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  <Vote className="w-3.5 h-3.5" /> Vote Now Kiosk
-                </button>
-                <button 
-                  onClick={() => { setView("admin"); setIsAdminAuthenticated(false); }} 
-                  className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 ${view === "admin" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  <Settings className="w-3.5 h-3.5" /> Admin Panel
-                </button>
-              </div>
-            ) : (
-              <span className="text-[10px] text-slate-500 italic">Click Logo 5x to configure Kiosk</span>
-            )}
+      {/* Progress Indicator */}
+      {step > 0 && step < 4 && (
+        <div className="mb-8 flex items-center justify-center gap-4 text-sm font-medium">
+          <div className={`flex items-center gap-2 ${step >= 1 ? 'text-indigo-400' : 'text-slate-600'}`}>
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center border ${step >= 1 ? 'border-indigo-400 bg-indigo-500/20' : 'border-slate-600'}`}>1</div>
+            Authentication
           </div>
-        </header>
+          <div className={`w-12 h-px ${step >= 2 ? 'bg-indigo-500/50' : 'bg-slate-800'}`}></div>
+          <div className={`flex items-center gap-2 ${step >= 2 ? 'text-indigo-400' : 'text-slate-600'}`}>
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center border ${step >= 2 ? 'border-indigo-400 bg-indigo-500/20' : 'border-slate-600'}`}>2</div>
+            Official Ballot
+          </div>
+          <div className={`w-12 h-px ${step >= 3 ? 'bg-indigo-500/50' : 'bg-slate-800'}`}></div>
+          <div className={`flex items-center gap-2 ${step >= 3 ? 'text-indigo-400' : 'text-slate-600'}`}>
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center border ${step >= 3 ? 'border-indigo-400 bg-indigo-500/20' : 'border-slate-600'}`}>3</div>
+            Review & Submit
+          </div>
+        </div>
       )}
 
-      {/* MAIN CONTAINER */}
-      <main className="flex-1 flex items-center justify-center p-4">
-
-        {/* --- VIEW: LIVE PUBLIC DISPLAY BOARD --- */}
-        {view === "dashboard" && (
-          <div className="w-full max-w-5xl space-y-6">
-            
-            {/* Real-time Turnout banner */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 flex items-center justify-between shadow-lg">
-                <div>
-                  <p className="text-xs text-slate-400 font-bold tracking-wider uppercase">Voter Turnout</p>
-                  <h3 className="text-3xl font-extrabold text-indigo-400 mt-1">{turnoutPercentage}%</h3>
-                </div>
-                <Users className="w-8 h-8 text-indigo-500" />
-              </div>
-
-              <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 flex items-center justify-between shadow-lg">
-                <div>
-                  <p className="text-xs text-slate-400 font-bold tracking-wider uppercase">Transmitted Ballots</p>
-                  <h3 className="text-3xl font-extrabold text-emerald-400 mt-1">{transmittedVotesCount} / {totalRegisteredVoters}</h3>
-                </div>
-                <CheckCircle className="w-8 h-8 text-emerald-500" />
-              </div>
-
-              <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 flex items-center justify-between shadow-lg">
-                <div>
-                  <p className="text-xs text-slate-400 font-bold tracking-wider uppercase">Polling Status</p>
-                  <h3 className={`text-2xl font-extrabold mt-1 uppercase ${electionActive ? "text-emerald-500 animate-pulse" : "text-rose-500"}`}>
-                    {electionActive ? "● Live / Open" : "Closed"}
-                  </h3>
-                </div>
-                <CalendarClock className="w-8 h-8 text-slate-500" />
-              </div>
+      {/* STEP 0: ELECOM Unlock Station (Enter Passkey Once) */}
+      {step === 0 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl max-w-md mx-auto mt-10">
+          <div className="text-center mb-8">
+            <Lock className="w-12 h-12 text-amber-500 mx-auto mb-4 animate-pulse" />
+            <h2 className="text-2xl font-bold text-white">Voter Station Locked</h2>
+            <p className="text-slate-400 text-sm mt-2">ELECOM Supervisor: Enter the <strong>Voter Station Passkey</strong> once to activate this terminal for all students.</p>
+          </div>
+          <form onSubmit={handleElecomUnlock} className="space-y-5">
+            <div>
+              <input 
+                type="password" 
+                required
+                placeholder="ELECOM Vote Passkey"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-white font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all"
+                value={elecomUnlockPin}
+                onChange={e => setElecomUnlockPin(e.target.value)}
+              />
             </div>
+            <button 
+              type="submit"
+              className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-amber-500/35 transition-all active:scale-95 flex justify-center items-center gap-2"
+            >
+              Unlock Station <ChevronRight size={18} />
+            </button>
+          </form>
+        </div>
+      )}
 
-            {/* Election Results Grid grouped by positions */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {["President", "Vice President", "Secretary", "Project Manager"].map((position) => {
-                const positionCandidates = candidatesList.filter(c => c.position === position);
-                
-                return (
-                  <div key={position} className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
-                    <h3 className="text-lg font-bold text-white border-b border-slate-700 pb-2 flex justify-between items-center">
-                      <span>{position}s</span>
-                      <span className="text-[10px] bg-slate-900 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-900/50 uppercase">Live Audit</span>
-                    </h3>
-
-                    <div className="space-y-3">
-                      {positionCandidates.map((candidate) => {
-                        const votes = voteDatabase[candidate.id] || 0;
-                        const totalPositionVotes = positionCandidates.reduce((acc, c) => acc + (voteDatabase[c.id] || 0), 0) || 1;
-                        const sharePercent = ((votes / totalPositionVotes) * 100).toFixed(1);
-
-                        return (
-                          <div key={candidate.id} className="space-y-1">
-                            <div className="flex justify-between text-sm">
-                              <div>
-                                <span className="font-semibold text-white">{candidate.name}</span>
-                                <span className="text-xs text-slate-400 ml-2">({candidate.party})</span>
-                              </div>
-                              <span className="font-mono font-bold text-indigo-400">{votes} ({sharePercent}%)</span>
-                            </div>
-                            <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-800">
-                              <div 
-                                className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full transition-all duration-1000"
-                                style={{ width: `${sharePercent}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+      {/* STEP 1: Login */}
+      {step === 1 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl max-w-md mx-auto">
+          <div className="text-center mb-8">
+            <UserCheck className="w-12 h-12 text-indigo-400 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-white">Voter Verification</h2>
+            <p className="text-slate-400 text-sm mt-2">Provide voter credentials to retrieve ballot eligibility status.</p>
+          </div>
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Student ID Number</label>
+              <input 
+                type="text" 
+                required
+                placeholder="e.g. 2026-0001"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                value={studentInfo.id}
+                onChange={e => setStudentInfo({...studentInfo, id: e.target.value})}
+              />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">Grade Level</label>
+              <select 
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all appearance-none"
+                value={studentInfo.grade}
+                onChange={e => setStudentInfo({...studentInfo, grade: e.target.value})}
+              >
+                {GRADES.map(g => <option key={g} value={g}>Grade {g}</option>)}
+              </select>
+            </div>
+            <button 
+              type="submit"
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-indigo-500/30 transition-all active:scale-95 flex justify-center items-center gap-2 mt-4"
+            >
+              Verify Credentials <ChevronRight size={18} />
+            </button>
+          </form>
+          <div className="mt-6 p-4 bg-slate-950/50 rounded-lg border border-slate-800 text-xs text-slate-500 flex gap-2">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <p>Your choices are completely anonymous. Your Student ID is used exclusively to verify eligibility and block duplication.</p>
+          </div>
+        </div>
+      )}
 
-            {/* Live Grade Representative Tabs */}
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
-              <h3 className="text-lg font-bold text-white border-b border-slate-700 pb-2">Grade Level Representatives</h3>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                {["7", "8", "9", "10"].map((grade) => {
-                  const reps = candidatesList.filter(c => c.position === "Grade Rep" && c.grade === grade);
-                  return (
-                    <div key={grade} className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-4 space-y-3">
-                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-800 pb-1">Grade {grade}</p>
-                      {reps.map(rep => {
-                        const repVotes = voteDatabase[rep.id] || 0;
-                        return (
-                          <div key={rep.id} className="flex justify-between items-center text-xs">
-                            <span className="text-slate-300 font-medium">{rep.name}</span>
-                            <span className="font-mono bg-slate-950 px-2 py-1 rounded border border-slate-800 text-indigo-400 font-bold">{repVotes} votes</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </div>
+      {/* STEP 2: The Ballot */}
+      {step === 2 && (
+        <div className="space-y-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-sm flex justify-between items-center sticky top-20 z-30 backdrop-blur-xl bg-slate-900/90">
+            <div>
+              <h2 className="text-xl font-bold text-white">Official Ballot Form</h2>
+              <p className="text-slate-400 text-sm">Select your candidates carefully.</p>
+            </div>
+            <div className="text-right">
+              <div className="text-sm text-slate-400">Secured Session</div>
+              <div className="font-mono font-bold text-indigo-400">{studentInfo.id} (Gr. {studentInfo.grade})</div>
             </div>
           </div>
-        )}
 
-        {/* --- VIEW: ADMIN PANEL --- */}
-        {view === "admin" && (
-          <div className="w-full max-w-xl bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl space-y-6">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2 border-b border-slate-700 pb-3">
-              <Settings className="w-5 h-5 text-indigo-400" /> Administrative Console
-            </h2>
+          {POSITIONS.map(position => {
+            let posCandidates = candidates.filter(c => c.position === position);
+            if (position === 'Grade Representative') {
+              posCandidates = posCandidates.filter(c => c.gradeLevel === studentInfo.grade);
+            }
+            
+            const isPM = position === 'Project Manager';
+            const selected = selections[position];
 
-            {!isAdminAuthenticated ? (
-              /* Auth Gate */
-              <form onSubmit={handleAdminLogin} className="space-y-4">
-                <div className="text-center">
-                  <p className="text-sm text-slate-400">Please verify your master PIN to access the election settings.</p>
+            return (
+              <div key={position} className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+                <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700/50 flex justify-between items-center">
+                  <h3 className="text-lg font-bold text-white">{position}</h3>
+                  {isPM && <span className="text-xs font-semibold px-2 py-1 bg-indigo-500/20 text-indigo-300 rounded">Select up to 2</span>}
                 </div>
-                <input 
-                  type="password" 
-                  placeholder="Enter Master Admin PIN" 
-                  value={adminPinInput}
-                  onChange={(e) => setAdminPinInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-center font-mono text-lg text-white focus:outline-none focus:border-indigo-500"
-                />
-                <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition">
-                  Confirm Admin Identity
-                </button>
-              </form>
-            ) : isAdminLockedOut ? (
-              /* Administrative lockout lock active during active voting hours */
-              <div className="text-center p-6 space-y-4">
-                <div className="p-3 bg-rose-500/15 text-rose-400 rounded-full inline-block border border-rose-500/30">
-                  <ShieldAlert className="w-12 h-12" />
-                </div>
-                <h3 className="text-xl font-extrabold text-white">Console Lockout Active</h3>
-                <p className="text-sm text-slate-400 leading-relaxed">
-                  The election is currently live and running within the scheduled hours of <span className="text-indigo-400 font-mono font-bold">{startTime} - {endTime}</span>. To protect the integrity of the ballot, all administrative adjustments are locked out until this period closes.
-                </p>
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-left font-mono text-xs text-slate-300 space-y-1">
-                  <p>• Machine Target Clock: {currentTimeString}</p>
-                  <p>• Scheduled Polling Loop: {startTime} to {endTime}</p>
-                  <p className="text-amber-400 font-semibold">• Status: Security override engaged.</p>
-                </div>
-              </div>
-            ) : (
-              /* Main Controls Panel */
-              <div className="space-y-6">
-                
-                {/* Active States / Poll Operations */}
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-700 flex flex-col md:flex-row gap-4 justify-between items-center">
-                  <div>
-                    <h4 className="font-bold text-white text-sm">Status: {electionActive ? "ACTIVE & SECURE" : "TERMINATED / OFFLINE"}</h4>
-                    <p className="text-xs text-slate-400 mt-0.5">Setup state defines active client terminal rules.</p>
-                  </div>
-                  {!electionActive ? (
-                    <button 
-                      onClick={handleOpenSetupModal} 
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-lg transition"
-                    >
-                      Open New Polls
-                    </button>
+                <div className="p-6">
+                  {posCandidates.length === 0 ? (
+                    <p className="text-slate-500 italic">No candidates available for this position.</p>
                   ) : (
-                    <button 
-                      onClick={() => setElectionActive(false)} 
-                      className="bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs px-4 py-2 rounded-lg transition"
-                    >
-                      Close Polls
-                    </button>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {posCandidates.map(c => {
+                        const isSelected = isPM ? (selected || []).includes(c.id) : selected === c.id;
+                        return (
+                          <div 
+                            key={c.id}
+                            onClick={() => handleSelection(position, c.id)}
+                            className={`p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 flex items-center gap-4
+                              ${isSelected 
+                                ? 'bg-indigo-500/10 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.15)]' 
+                                : 'bg-slate-950/50 border-slate-800 hover:border-slate-600 hover:bg-slate-900'
+                              }`}
+                          >
+                            <div className={`w-6 h-6 rounded-${isPM ? 'sm' : 'full'} border-2 flex items-center justify-center shrink-0 transition-colors
+                              ${isSelected ? 'border-indigo-500 bg-indigo-500' : 'border-slate-600'}`}>
+                              {isSelected && <CheckCircle2 size={14} className="text-white" />}
+                            </div>
+                            <div>
+                              <div className={`font-bold ${isSelected ? 'text-indigo-300' : 'text-slate-200'}`}>{c.name}</div>
+                              <div className="text-sm text-slate-500">{c.party}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
-
-                {/* Configurations parameters */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 space-y-3">
-                    <h5 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><CalendarClock className="w-3.5 h-3.5 text-indigo-400"/> Polling Schedule</h5>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase block mb-1">Open Time</label>
-                      <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-sm text-white" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase block mb-1">Close Time</label>
-                      <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-sm text-white" />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 space-y-3">
-                    <h5 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5"><Key className="w-3.5 h-3.5 text-indigo-400"/> Key Codes</h5>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase block mb-1">Admin master PIN</label>
-                      <input type="text" value={adminPin} onChange={(e) => setAdminPin(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-sm text-white" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400 uppercase block mb-1">ELECOM Unlock key</label>
-                      <input type="text" value={voterUnlockPin} onChange={(e) => setVoterUnlockPin(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-sm text-white" />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Reset nuclear option button */}
-                <div className="border-t border-slate-700 pt-4 flex justify-between items-center">
-                  <p className="text-xs text-slate-400">To drop voter registrations and clear absolute audit logs:</p>
-                  <button 
-                    onClick={handleResetElection} 
-                    className="bg-rose-900/40 hover:bg-rose-900/70 text-rose-300 font-bold text-xs border border-rose-500/30 px-4 py-2 rounded-lg transition"
-                  >
-                    Nuclear Database Reset
-                  </button>
-                </div>
               </div>
-            )}
+            );
+          })}
+
+          <div className="flex justify-end pt-4">
+            <button 
+              onClick={() => setStep(3)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2"
+            >
+              Review Choices <ChevronRight size={18} />
+            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* --- VIEW: VOTER TERMINAL BOOTH LOOP --- */}
-        {view === "voter" && (
-          <div className="w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
-            
-            {/* Condition A: Election Closed */}
-            {!electionActive && (
-              <div className="p-8 text-center space-y-4">
-                <div className="p-3 bg-rose-500/10 text-rose-400 rounded-full inline-block border border-rose-500/20">
-                  <Lock className="w-10 h-10" />
-                </div>
-                <h3 className="text-lg font-bold text-white">Terminal Offline</h3>
-                <p className="text-sm text-slate-400 leading-relaxed">
-                  The active polling session has concluded or is temporarily offline. Please consult an ELECOM officer to begin.
-                </p>
-              </div>
-            )}
-
-            {/* Condition B: Active but terminal locked - waiting for ELECOM supervisor sign-in */}
-            {electionActive && !isTerminalUnlocked && (
-              <div className="p-6 space-y-4">
-                <div className="text-center">
-                  <h3 className="text-lg font-bold text-white">ELECOM Verification Required</h3>
-                  <p className="text-xs text-slate-400 mt-1">An official supervisor must enter their passkey to prepare this computer terminal loop.</p>
-                </div>
-                <form onSubmit={handleElecomUnlock} className="space-y-3">
-                  <input 
-                    type="password" 
-                    placeholder="Enter ELECOM Passkey" 
-                    value={elecomInput}
-                    onChange={(e) => setElecomInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-center font-mono text-lg text-white focus:outline-none focus:border-indigo-500"
-                  />
-                  <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition">
-                    Unlock Kiosk Loop
-                  </button>
-                </form>
-              </div>
-            )}
-
-            {/* Condition C: Kiosk Active - Student Verification Loop */}
-            {electionActive && isTerminalUnlocked && (
-              <div className="p-6">
-                
-                {/* Voter Loop Step 1: Student Login */}
-                {step === 1 && (
-                  <div className="space-y-5">
-                    <div className="text-center">
-                      <h3 className="text-xl font-extrabold text-white">Student Voting Kiosk</h3>
-                      <p className="text-xs text-slate-400 mt-1">Please log in with your credentials to generate your ballot sheet.</p>
-                    </div>
-
-                    <form onSubmit={handleStudentLogin} className="space-y-4">
-                      <div>
-                        <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Student ID Number</label>
-                        <input 
-                          type="text" 
-                          required 
-                          placeholder="e.g. CC-2026-0941" 
-                          value={studentId}
-                          onChange={(e) => setStudentId(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-center font-mono text-base uppercase text-white focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Year/Grade Level</label>
-                        <select 
-                          value={studentGrade}
-                          onChange={(e) => setStudentGrade(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-indigo-500"
-                        >
-                          <option value="7">Grade 7</option>
-                          <option value="8">Grade 8</option>
-                          <option value="9">Grade 9</option>
-                          <option value="10">Grade 10</option>
-                        </select>
-                      </div>
-
-                      <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-950/50">
-                        Generate Digital Ballot <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </form>
-                  </div>
-                )}
-
-                {/* Voter Loop Step 2: Digital Ballot Section */}
-                {step === 2 && (
-                  <div className="space-y-5">
-                    <div className="border-b border-slate-700 pb-3 flex justify-between items-center">
-                      <div>
-                        <h4 className="font-extrabold text-white">Digital Ballot Sheet</h4>
-                        <p className="text-[10px] text-slate-400">Registered ID: {studentId}</p>
-                      </div>
-                      <span className="text-xs font-mono bg-slate-950 px-2.5 py-1 rounded border border-slate-800 text-indigo-400 font-bold">Grade {studentGrade}</span>
-                    </div>
-
-                    {/* Scrollable Ballot Fields */}
-                    <div className="space-y-4 max-h-80 overflow-y-auto pr-1">
-                      {["President", "Vice President", "Secretary", "Project Manager", "Grade Rep"].map((position) => {
-                        // Dynamically filter Grade Rep candidates to match student's grade
-                        const isGradeRep = position === "Grade Rep";
-                        const positionCandidates = candidatesList.filter(c => {
-                          if (isGradeRep) {
-                            return c.position === position && c.grade === studentGrade;
-                          }
-                          return c.position === position;
-                        });
-
-                        const maxAllowed = position === "Project Manager" ? 2 : 1;
-                        const selection = selectedCandidates[position];
-
-                        return (
-                          <div key={position} className="bg-slate-905 border border-slate-700/50 rounded-xl p-3.5 space-y-2">
-                            <div className="flex justify-between items-center border-b border-slate-800 pb-1">
-                              <span className="text-xs font-bold text-indigo-300 uppercase tracking-wider">{position}</span>
-                              <span className="text-[10px] text-slate-400">Choose up to {maxAllowed}</span>
-                            </div>
-
-                            <div className="grid grid-cols-1 gap-1.5">
-                              {positionCandidates.map((candidate) => {
-                                const isSelected = maxAllowed === 1 
-                                  ? selection === candidate.id 
-                                  : (selection || []).includes(candidate.id);
-
-                                return (
-                                  <div 
-                                    key={candidate.id}
-                                    onClick={() => handleSelectCandidate(position, candidate.id, maxAllowed)}
-                                    className={`p-2.5 rounded-lg border text-left cursor-pointer transition flex items-center justify-between ${isSelected ? "bg-indigo-600/20 border-indigo-500" : "bg-slate-950/40 border-slate-800 hover:border-slate-700"}`}
-                                  >
-                                    <div>
-                                      <p className="text-xs font-bold text-white">{candidate.name}</p>
-                                      <p className="text-[10px] text-slate-400">{candidate.party}</p>
-                                    </div>
-                                    <div className={`h-4.5 w-4.5 rounded-full border flex items-center justify-center ${isSelected ? "bg-indigo-600 border-indigo-500" : "border-slate-700"}`}>
-                                      {isSelected && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <button 
-                      onClick={handleCastVotes} 
-                      className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold py-3 rounded-xl transition shadow-lg shadow-emerald-950/40"
-                    >
-                      Cast Secure Ballot
-                    </button>
-                  </div>
-                )}
-
-                {/* Voter Loop Step 3: Success Screen */}
-                {step === 3 && (
-                  <div className="text-center py-6 space-y-4">
-                    <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full inline-block border border-emerald-500/20 animate-bounce">
-                      <CheckCircle className="w-12 h-12" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-extrabold text-white">Ballot Cast Successfully!</h3>
-                      <p className="text-xs text-slate-400 leading-relaxed mt-1">
-                        Thank you for executing your voter rights. Your votes have been sealed, validated, and logged inside the secure records directory.
-                      </p>
-                    </div>
-                    <button 
-                      onClick={handleResetForNextVoter} 
-                      className="w-full bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white font-bold py-3 rounded-xl transition"
-                    >
-                      Terminal Ready for Next Student
-                    </button>
-                  </div>
-                )}
-
-              </div>
-            )}
+      {/* STEP 3: Review Selection */}
+      {step === 3 && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl max-w-2xl mx-auto">
+          <div className="text-center mb-8">
+            <BarChart3 className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-white">Review Your Ballot</h2>
+            <p className="text-slate-400 text-sm mt-2">Verify selections before final confirmation.</p>
           </div>
-        )}
-      </main>
-
-      {/* --- SETUP ACTIVE ELECTION MODAL DIALOG --- */}
-      {showSetupModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-800 border border-slate-700 w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden">
-            <div className="p-4 bg-slate-950 border-b border-slate-700 flex justify-between items-center">
-              <h3 className="font-bold text-white text-sm flex items-center gap-1.5"><Unlock className="w-4 h-4 text-emerald-400"/> Initialize Polling Station</h3>
-              <button onClick={() => setShowSetupModal(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4"/></button>
-            </div>
-            
-            <form onSubmit={handleConfirmStartElection} className="p-5 space-y-4">
-              <p className="text-xs text-slate-400 leading-relaxed">Please set fresh passwords for this specific voting station before allowing students to cast ballots.</p>
+          
+          <div className="space-y-4 mb-8">
+            {POSITIONS.map(position => {
+              const selected = selections[position];
+              let displayName = <span className="text-slate-500 italic">Abstained</span>;
               
-              <div>
-                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase">New Master Admin PIN</label>
-                <input 
-                  required 
-                  type="text" 
-                  placeholder="e.g. 1234" 
-                  value={newAdminPin} 
-                  onChange={(e) => setNewAdminPin(e.target.value)} 
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 font-mono text-sm text-white focus:outline-none focus:border-indigo-500" 
-                />
-              </div>
+              if (selected) {
+                if (Array.isArray(selected) && selected.length > 0) {
+                  const names = selected.map(id => candidates.find(c => c.id === id)?.name).join(' & ');
+                  displayName = <span className="font-semibold text-emerald-300">{names}</span>;
+                } else if (!Array.isArray(selected)) {
+                  const name = candidates.find(c => c.id === selected)?.name;
+                  displayName = <span className="font-semibold text-emerald-300">{name}</span>;
+                }
+              }
 
-              <div>
-                <label className="block text-xs text-slate-400 mb-1 font-semibold uppercase">New ELECOM Kiosk Passkey</label>
-                <input 
-                  required 
-                  type="text" 
-                  placeholder="e.g. 5678" 
-                  value={newElecomPin} 
-                  onChange={(e) => setNewElecomPin(e.target.value)} 
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 font-mono text-sm text-white focus:outline-none focus:border-indigo-500" 
-                />
-              </div>
+              if (position === 'Grade Representative') {
+                const hasCandidatesForGrade = candidates.some(c => c.position === position && c.gradeLevel === studentInfo.grade);
+                if (!hasCandidatesForGrade) return null;
+              }
 
-              <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl transition mt-2 shadow-lg text-sm">
-                Deploy & Open Station
+              return (
+                <div key={position} className="flex justify-between items-center py-3 border-b border-slate-800 last:border-0">
+                  <span className="text-slate-400 text-sm">{position}</span>
+                  <div className="text-right text-sm">{displayName}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={() => setStep(2)}
+              disabled={isSubmitting}
+              className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 px-4 rounded-lg transition-all"
+            >
+              Modify Selection
+            </button>
+            <button 
+              onClick={submitBallot}
+              disabled={isSubmitting}
+              className="flex-2 w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:text-emerald-300 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-emerald-500/30 transition-all flex justify-center items-center gap-2"
+            >
+              {isSubmitting ? <span className="animate-spin"><CheckCircle2 size={18}/></span> : <CheckCircle2 size={18} />}
+              {isSubmitting ? 'Submitting Ballot...' : 'Confirm Submission'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 4: Success Screen */}
+      {step === 4 && (
+        <div className="max-w-md mx-auto mt-20 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-10 text-center animate-in zoom-in duration-500">
+          <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+            <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Ballot Cast Successfully</h2>
+          <p className="text-slate-400 mb-8">Thank you for voting. Your record has been registered. Please exit the booth so the next student can queue.</p>
+          <button 
+            onClick={handleNextVoter}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-indigo-500/30 transition-all active:scale-95 flex justify-center items-center gap-2 text-sm"
+          >
+            Terminal Ready For Next Student
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminDashboard({ candidates, settings, showToast, isLockoutActive, currentTime }) {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [pin, setPin] = useState('');
+  const [activeTab, setActiveTab] = useState('candidates'); // 'candidates', 'settings'
+  
+  // Form State
+  const [newCandidate, setNewCandidate] = useState({ name: '', position: 'President', party: '', gradeLevel: '7' });
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Security & Settings Form State
+  const [securityForm, setSecurityForm] = useState({ 
+    adminPin: '', 
+    voterUnlockPin: '',
+    startTime: '08:00',
+    endTime: '16:00',
+    totalRegisteredVoters: 500
+  });
+  
+  // Custom Modal for opening election and changing credentials
+  const [showOpenElectionModal, setShowOpenElectionModal] = useState(false);
+  const [openElectionForm, setOpenElectionForm] = useState({
+    newAdminPin: '',
+    newVoterUnlockPin: ''
+  });
+
+  const [resetModal, setResetModal] = useState({ show: false, input: '' });
+
+  useEffect(() => {
+    if (settings) {
+      setSecurityForm({ 
+        adminPin: settings.adminPin || 'ADMIN2026',
+        voterUnlockPin: settings.voterUnlockPin || 'VOTE2026',
+        startTime: settings.startTime || '08:00',
+        endTime: settings.endTime || '16:00',
+        totalRegisteredVoters: settings.totalRegisteredVoters || 500
+      });
+    }
+  }, [settings]);
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    const correctPin = settings?.adminPin || 'ADMIN2026';
+    if (pin === correctPin) {
+      setIsAuthenticated(true);
+      showToast("Access granted to Admin Panel.", "success");
+    } else {
+      showToast("Invalid admin verification PIN.", "error");
+      setPin('');
+    }
+  };
+
+  const addCandidate = async (e) => {
+    e.preventDefault();
+    setIsProcessing(true);
+    try {
+      const newRef = doc(getPublicCollection('candidates'));
+      await setDoc(newRef, {
+        ...newCandidate,
+        votes: 0
+      });
+      showToast("Candidate registered successfully.", "success");
+      setNewCandidate({ name: '', position: 'President', party: '', gradeLevel: '7' });
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to register candidate.", "error");
+    }
+    setIsProcessing(false);
+  };
+
+  const deleteCandidate = async (id) => {
+    try {
+      await deleteDoc(getPublicDoc('candidates', id));
+      showToast("Candidate removed from pool.", "info");
+    } catch (err) {
+      showToast("Failed to remove candidate.", "error");
+    }
+  };
+
+  const handleOpenElectionClick = () => {
+    if (!settings.electionActive) {
+      setOpenElectionForm({
+        newAdminPin: settings.adminPin || '',
+        newVoterUnlockPin: settings.voterUnlockPin || ''
+      });
+      setShowOpenElectionModal(true);
+    } else {
+      toggleElectionState(false);
+    }
+  };
+
+  const toggleElectionState = async (targetActiveState, overrideKeys = null) => {
+    try {
+      const payload = {
+        electionActive: targetActiveState
+      };
+      if (overrideKeys) {
+        payload.adminPin = overrideKeys.adminPin;
+        payload.voterUnlockPin = overrideKeys.voterUnlockPin;
+      }
+      await updateDoc(getPublicDoc('settings', 'config'), payload);
+      showToast(`Election Portal is now ${targetActiveState ? 'OPENED' : 'CLOSED'}.`, "info");
+      
+      if (targetActiveState) {
+        setShowOpenElectionModal(false);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Error toggling election status.", "error");
+    }
+  };
+
+  const confirmOpenWithNewCredentials = (e) => {
+    e.preventDefault();
+    if (!openElectionForm.newAdminPin || !openElectionForm.newVoterUnlockPin) {
+      showToast("Both security codes must be configured.", "error");
+      return;
+    }
+    toggleElectionState(true, {
+      adminPin: openElectionForm.newAdminPin,
+      voterUnlockPin: openElectionForm.newVoterUnlockPin
+    });
+  };
+
+  const saveConfigSettings = async (e) => {
+    e.preventDefault();
+    setIsProcessing(true);
+    try {
+      await updateDoc(getPublicDoc('settings', 'config'), {
+        adminPin: securityForm.adminPin,
+        voterUnlockPin: securityForm.voterUnlockPin,
+        startTime: securityForm.startTime,
+        endTime: securityForm.endTime,
+        totalRegisteredVoters: Number(securityForm.totalRegisteredVoters)
+      });
+      showToast("Configuration profiles updated successfully.", "success");
+    } catch(err) {
+      showToast("Failed to update configurations.", "error");
+    }
+    setIsProcessing(false);
+  };
+
+  const initiateReset = () => {
+    setResetModal({ show: true, input: '' });
+  };
+
+  const confirmReset = async () => {
+    const correctPin = settings?.adminPin || 'ADMIN2026';
+    if (resetModal.input !== correctPin) {
+      showToast("Verification failed: Admin PIN incorrect.", "error");
+      return;
+    }
+    
+    setIsProcessing(true);
+    try {
+      const updates = candidates.map(c => updateDoc(getPublicDoc('candidates', c.id), { votes: 0 }));
+      await Promise.all(updates);
+      
+      showToast("Vote counts successfully reset to 0.", "success");
+      setResetModal({ show: false, input: '' });
+    } catch (err) {
+      showToast("Error resetting vote tallies.", "error");
+    }
+    setIsProcessing(false);
+  };
+
+  const formatTimeTwelve = (timeString) => {
+    if (!timeString) return '';
+    const [hours, minutes] = timeString.split(':');
+    const h = parseInt(hours, 10);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h % 12 || 12;
+    return `${hour12}:${minutes} ${ampm}`;
+  };
+
+  const timeDetails = useMemo(() => {
+    const currentMins = currentTime.getHours() * 60 + currentTime.getMinutes();
+    const [sH, sM] = (settings?.startTime || '08:00').split(':').map(Number);
+    const [eH, eM] = (settings?.endTime || '16:00').split(':').map(Number);
+    return {
+      current: currentMins,
+      start: sH * 60 + (sM || 0),
+      end: eH * 60 + (eM || 0)
+    };
+  }, [settings, currentTime]);
+
+  /* CRITICAL SECURITY FEATURE: Lockout screen during designated hours */
+  if (isLockoutActive) {
+    return (
+      <div className="max-w-xl mx-auto mt-20 bg-slate-900 border border-red-500/30 rounded-2xl p-10 text-center shadow-2xl animate-in zoom-in duration-300">
+        <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-500/30">
+          <Lock className="w-10 h-10 text-red-500 animate-pulse" />
+        </div>
+        <h2 className="text-3xl font-extrabold text-white mb-2 tracking-tight">COMLAB LOCKOUT ENFORCED</h2>
+        <p className="text-red-400 font-bold uppercase tracking-widest text-xs mb-4">Secured Voting State - Overrides Blocked</p>
+        
+        <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 text-left space-y-3 mb-6">
+          <div className="flex justify-between items-center text-sm border-b border-slate-800 pb-2">
+            <span className="text-slate-400">Current Server/Browser Time:</span>
+            <span className="font-mono font-semibold text-white">{currentTime.toLocaleTimeString()}</span>
+          </div>
+          <div className="flex justify-between items-center text-sm border-b border-slate-800 pb-2">
+            <span className="text-slate-400">Active Lock Window:</span>
+            <span className="font-semibold text-amber-400">{formatTimeTwelve(settings.startTime)} to {formatTimeTwelve(settings.endTime)}</span>
+          </div>
+          <div className="text-xs text-slate-500 leading-relaxed">
+            To guarantee complete ballot transparency and satisfy system compliance requirements, administrative modifications and results overrides are strictly locked down during operational polling hours.
+          </div>
+        </div>
+
+        <div className="text-xs text-slate-400 italic">
+          Admin dashboard will unlock automatically at the close of hours ({formatTimeTwelve(settings.endTime)}).
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="max-w-md mx-auto mt-20 bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl text-center">
+        <ShieldAlert className="w-12 h-12 text-indigo-400 mx-auto mb-4" />
+        <h2 className="text-xl font-bold text-white mb-2">Admin Panel Access</h2>
+        <p className="text-xs text-slate-500 mb-6">Security Verification Level 1 Required.</p>
+        
+        <form onSubmit={handleLogin}>
+          <input 
+            type="password" 
+            placeholder="Admin PIN"
+            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-white font-mono tracking-widest focus:outline-none focus:border-indigo-500 mb-4"
+            value={pin}
+            onChange={e => setPin(e.target.value)}
+          />
+          <button type="submit" className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg transition-colors">
+            Authorize Connection
+          </button>
+        </form>
+
+        {/* Live status debugger on why admin is allowed/denied */}
+        <div className="mt-8 pt-6 border-t border-slate-800 text-left">
+          <div className="flex items-center gap-2 mb-2">
+            <Unlock className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Lockout Evaluation Status</span>
+          </div>
+          <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 space-y-1.5 text-[11px] text-slate-400 font-mono">
+            <div>Current Local Time: <span className="text-slate-200">{currentTime.toLocaleTimeString()}</span></div>
+            <div>Election Portal: <span className={settings.electionActive ? 'text-emerald-400' : 'text-amber-400'}>{settings.electionActive ? 'OPEN' : 'CLOSED'}</span></div>
+            <div>Scheduled: <span className="text-slate-200">{settings.startTime} - {settings.endTime}</span></div>
+            <div className="pt-2 border-t border-slate-900 text-slate-500 leading-normal font-sans">
+              <strong>Info:</strong> Lockout initiates only when the election is <span className="text-slate-300">OPEN</span> and the current browser time falls inside the scheduled window.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+        <div>
+          <h2 className="text-2xl font-bold text-white">ELECOM Administrative console</h2>
+          <p className="text-slate-400 text-sm">Control polling parameters, security protocols, and candidate registration.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setActiveTab('candidates')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'candidates' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-300'}`}>Candidates</button>
+          <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'settings' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-300'}`}>System Settings</button>
+        </div>
+      </div>
+
+      {activeTab === 'candidates' && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Add Candidate Form */}
+          <div className="col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit sticky top-24">
+            <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><Plus size={18}/> New Registration</h3>
+            <form onSubmit={addCandidate} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Full Name</label>
+                <input required type="text" className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" value={newCandidate.name} onChange={e => setNewCandidate({...newCandidate, name: e.target.value})} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Position</label>
+                <select className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 appearance-none" value={newCandidate.position} onChange={e => setNewCandidate({...newCandidate, position: e.target.value})}>
+                  {POSITIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              {newCandidate.position === 'Grade Representative' && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Grade Level</label>
+                  <select className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 appearance-none" value={newCandidate.gradeLevel} onChange={e => setNewCandidate({...newCandidate, gradeLevel: e.target.value})}>
+                    {GRADES.map(g => <option key={g} value={g}>Grade {g}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Party / Affiliation</label>
+                <input required type="text" className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" value={newCandidate.party} onChange={e => setNewCandidate({...newCandidate, party: e.target.value})} />
+              </div>
+              <button disabled={isProcessing} type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-lg transition-colors mt-2 text-sm">
+                Register Candidate
               </button>
             </form>
+          </div>
+
+          {/* Candidates List */}
+          <div className="col-span-1 md:col-span-2 space-y-4">
+            {POSITIONS.map(pos => {
+              const posCands = candidates.filter(c => c.position === pos);
+              if (posCands.length === 0) return null;
+              return (
+                <div key={pos} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                  <div className="bg-slate-800/50 px-4 py-2 border-b border-slate-700 text-sm font-bold text-slate-300">{pos}</div>
+                  <div className="divide-y divide-slate-800">
+                    {posCands.map(c => (
+                      <div key={c.id} className="flex justify-between items-center p-4 hover:bg-slate-800/30 transition-colors">
+                        <div>
+                          <div className="font-semibold text-white">{c.name} {pos === 'Grade Representative' && <span className="text-indigo-400 text-xs ml-2">(Gr. {c.gradeLevel})</span>}</div>
+                          <div className="text-xs text-slate-500">{c.party} • {c.votes || 0} votes</div>
+                        </div>
+                        <button onClick={() => deleteCandidate(c.id)} className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'settings' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-bottom-2">
+          {/* Core Operations and Action Items */}
+          <div className="space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2"><Settings size={18}/> Active Operations</h3>
+              <div className="space-y-6">
+                
+                {/* Voting Toggle Container */}
+                <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800">
+                  <div>
+                    <div className="font-bold text-white mb-1">Voting Portal</div>
+                    <div className="text-xs text-slate-500">Starts or halts election ballot entry.</div>
+                  </div>
+                  <button 
+                    onClick={handleOpenElectionClick}
+                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${settings.electionActive ? 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20'}`}
+                  >
+                    {settings.electionActive ? 'Close Election' : 'Open Election'}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-red-950/20 rounded-xl border border-red-900/30">
+                  <div>
+                    <div className="font-bold text-red-400 mb-1">Reset Vote Tallies</div>
+                    <div className="text-xs text-red-400/70">Wipes all candidate tallies. Irreversible.</div>
+                  </div>
+                  <button 
+                    disabled={isProcessing}
+                    onClick={initiateReset}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-bold transition-colors"
+                  >
+                    Reset Tallies
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* General Settings */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2"><CalendarClock size={18}/> Operational Parameters</h3>
+              <form onSubmit={saveConfigSettings} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1">Start Time (Lockout Start)</label>
+                    <input 
+                      required 
+                      type="time" 
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" 
+                      value={securityForm.startTime} 
+                      onChange={e => setSecurityForm({...securityForm, startTime: e.target.value})} 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-400 mb-1">End Time (Lockout Release)</label>
+                    <input 
+                      required 
+                      type="time" 
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" 
+                      value={securityForm.endTime} 
+                      onChange={e => setSecurityForm({...securityForm, endTime: e.target.value})} 
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Total Registered Voters (for Turnout Calculation)</label>
+                  <input 
+                    required 
+                    type="number" 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" 
+                    value={securityForm.totalRegisteredVoters} 
+                    onChange={e => setSecurityForm({...securityForm, totalRegisteredVoters: e.target.value})} 
+                  />
+                </div>
+
+                <div className="p-3 bg-indigo-500/5 border border-indigo-500/10 rounded-lg text-xs text-indigo-300/80 leading-relaxed">
+                  <strong>Operational Rule:</strong> Setting the operational window activates the automated administrative lockout. Between the start and end times, the system blocks access to this Admin page to verify complete polling integrity.
+                </div>
+
+                <button disabled={isProcessing} type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-lg transition-colors text-sm">
+                  Save Setup Parameters
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Security Credentials Setup */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-fit">
+            <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2"><Key size={18}/> Security Codes</h3>
+            <form onSubmit={saveConfigSettings} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Admin Configuration PIN</label>
+                <input 
+                  required 
+                  type="text" 
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" 
+                  value={securityForm.adminPin} 
+                  onChange={e => setSecurityForm({...securityForm, adminPin: e.target.value})} 
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">ELECOM Voter Station Passkey (Unlocks Kiosk)</label>
+                <input 
+                  required 
+                  type="text" 
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" 
+                  value={securityForm.voterUnlockPin} 
+                  onChange={e => setSecurityForm({...securityForm, voterUnlockPin: e.target.value})} 
+                />
+              </div>
+              <button disabled={isProcessing} type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-lg transition-colors mt-4 text-sm">
+                Save Security Codes
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Open Election Modal requiring New Password/PIN setup */}
+      {showOpenElectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-extrabold text-white flex items-center gap-2"><Key className="text-amber-400" /> Security Override Prompt</h3>
+              <button onClick={() => setShowOpenElectionModal(false)} className="text-slate-500 hover:text-white transition-colors"><X size={20}/></button>
+            </div>
+            
+            <form onSubmit={confirmOpenWithNewCredentials} className="space-y-4">
+              <p className="text-slate-300 text-xs leading-relaxed">
+                Opening the election requires regenerating the system credentials. Enter the values to authorize this specific session.
+              </p>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">New Admin Configuration PIN</label>
+                <input 
+                  required 
+                  type="text" 
+                  placeholder="Set safe new admin password"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono"
+                  value={openElectionForm.newAdminPin}
+                  onChange={e => setOpenElectionForm({...openElectionForm, newAdminPin: e.target.value})}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">New ELECOM Voter Station Passkey</label>
+                <input 
+                  required 
+                  type="text" 
+                  placeholder="Set safe new voter station code"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono"
+                  value={openElectionForm.newVoterUnlockPin}
+                  onChange={e => setOpenElectionForm({...openElectionForm, newVoterUnlockPin: e.target.value})}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button 
+                  type="button"
+                  onClick={() => setShowOpenElectionModal(false)}
+                  className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold shadow-lg shadow-emerald-600/20"
+                >
+                  Confirm & Open Election
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Verification Modal */}
+      {resetModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-red-400">Critical Action: Reset Votes</h3>
+              <button onClick={() => setResetModal({ show: false, input: '' })} className="text-slate-500 hover:text-white transition-colors"><X size={20}/></button>
+            </div>
+            
+            <div>
+              <p className="text-slate-300 text-sm mb-4">
+                You are resetting all candidate votes to zero. Enter the Admin PIN to confirm.
+              </p>
+              <input 
+                type="password" 
+                placeholder="Admin PIN"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-center text-white font-mono tracking-widest text-xl focus:outline-none focus:border-red-500 mb-6"
+                value={resetModal.input}
+                onChange={e => setResetModal({...resetModal, input: e.target.value})}
+              />
+              <button 
+                disabled={isProcessing || !resetModal.input}
+                onClick={confirmReset}
+                className="w-full bg-red-600 hover:bg-red-500 disabled:bg-red-800 disabled:text-red-300 text-white font-bold py-3 rounded-lg transition-colors"
+              >
+                {isProcessing ? 'Resetting...' : 'Confirm Total Reset'}
+              </button>
+            </div>
           </div>
         </div>
       )}
