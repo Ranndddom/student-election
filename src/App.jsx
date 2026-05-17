@@ -13,7 +13,22 @@ import {
   deleteDoc, updateDoc, increment 
 } from 'firebase/firestore';
 
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+// --- FIREBASE CONFIGURATION ---
+// Replace these placeholder values with your actual Firebase project settings 
+// to make the app work on Vercel.
+const fallbackConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config 
+  ? JSON.parse(__firebase_config) 
+  : fallbackConfig;
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -72,10 +87,17 @@ export default function App() {
         }
       } catch (err) {
         console.error("Auth error:", err);
+        setToast({ message: "Database offline. Please add your Firebase API keys to App.jsx.", type: "error" });
+        setLoading(false);
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) {
+        setLoading(false);
+      }
+    });
     return () => unsubscribe();
   }, []);
 
